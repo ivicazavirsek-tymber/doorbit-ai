@@ -1,15 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
-import { jsonError, jsonOk } from "@/lib/api/http";
+import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
 
 const MAX_PAGE_SIZE = 50;
 
 export async function GET(request: Request) {
+  const requestId = newRequestId();
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return jsonError(401, "UNAUTHORIZED", "Prijavi se.");
+    return jsonError(401, "UNAUTHORIZED", "Prijavi se.", undefined, { requestId });
   }
 
   const { searchParams } = new URL(request.url);
@@ -40,7 +41,9 @@ export async function GET(request: Request) {
 
   if (error) {
     console.error("history", error);
-    return jsonError(500, "HISTORY_FAILED", "Ne mogu da učitam istoriju.");
+    return jsonError(500, "HISTORY_FAILED", "Ne mogu da učitam istoriju.", undefined, {
+      requestId,
+    });
   }
 
   return jsonOk({

@@ -1,11 +1,14 @@
 import { checkRateLimitAllowed } from "@/lib/api/rate-limit";
 import { consumeCredits } from "@/lib/api/consume-credits";
-import { jsonError, jsonOk } from "@/lib/api/http";
+import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
+import { copyOpenAiFailureResponse } from "@/lib/api/openai-route-error";
 import { getTokenBalance } from "@/lib/api/token-balance";
 import { openaiGenerateCopy } from "@/lib/ai/openai-copy";
 import {
   CREDIT_COST_COPY,
+  MAX_GENERATION_TEXT_CHARS,
   RATE_LIMIT_PER_ROUTE_PER_MINUTE,
+  RATE_LIMIT_RETRY_AFTER_SEC,
 } from "@/lib/generation/constants";
 import { extForMime, validateImageFile } from "@/lib/generation/validate-upload";
 import { getOpenAITextModel } from "@/lib/env";
@@ -13,19 +16,28 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 
 export async function POST(request: Request) {
+  const requestId = newRequestId();
+  const fail = (
+    status: number,
+    code: string,
+    message: string,
+    details?: unknown,
+    headers?: HeadersInit
+  ) => jsonError(status, code, message, details, { requestId, headers });
+
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return jsonError(401, "UNAUTHORIZED", "Prijavi se.");
+    return fail(401, "UNAUTHORIZED", "Prijavi se.");
   }
 
   let service;
   try {
     service = createServiceRoleClient();
   } catch {
-    return jsonError(
+    return fail(
       500,
       "SERVER_CONFIG",
       "Nedostaje SUPABASE_SERVICE_ROLE_KEY na serveru."
@@ -39,15 +51,17 @@ export async function POST(request: Request) {
     RATE_LIMIT_PER_ROUTE_PER_MINUTE
   );
   if (!okRate) {
-    return jsonError(429, "RATE_LIMIT", "Previše zahteva. Pokušaj za minut.");
+    return fail(429, "RATE_LIMIT", "Previše zahteva. Pokušaj za minut.", undefined, {
+      "Retry-After": String(RATE_LIMIT_RETRY_AFTER_SEC),
+    });
   }
 
   const balance = await getTokenBalance(supabase, user.id);
   if (balance === null) {
-    return jsonError(500, "BALANCE", "Ne mogu da pročitam stanje kredita.");
+    return fail(500, "BALANCE_READ_FAILED", "Ne mogu da pročitam stanje kredita.");
   }
   if (balance < CREDIT_COST_COPY) {
-    return jsonError(402, "INSUFFICIENT_TOKENS", "Nemaš dovoljno kredita.", {
+    return fail(402, "INSUFFICIENT_TOKENS", "Nemaš dovoljno kredita.", {
       balance_tokens: balance,
       required: CREDIT_COST_COPY,
     });
@@ -55,31 +69,41 @@ export async function POST(request: Request) {
 
   const ct = request.headers.get("content-type") || "";
   if (!ct.includes("multipart/form-data")) {
-    return jsonError(
+    return fail(
       400,
       "INVALID_CONTENT_TYPE",
       "Koristi multipart/form-data (polje text_preferences, opciono image)."
     );
   }
 
-  const form = await request.formData();
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return fail(
+      413,
+      "PAYLOAD_TOO_LARGE",
+      "Zahtev je prevelik ili telo nije validno multipart polje."
+    );
+  }
   const text_preferences = String(form.get("text_preferences") || "").trim();
   const idempotency_key = String(form.get("idempotency_key") || "").trim();
   const imageEntry = form.get("image");
 
   if (!text_preferences) {
-    return jsonError(
-      400,
-      "INVALID_INPUT",
-      "Polje text_preferences je obavezno."
-    );
+    return fail(400, "INVALID_INPUT", "Polje text_preferences je obavezno.");
+  }
+  if (text_preferences.length > MAX_GENERATION_TEXT_CHARS) {
+    return fail(400, "INPUT_TOO_LONG", "Polje text_preferences je predugačko.", {
+      max_chars: MAX_GENERATION_TEXT_CHARS,
+    });
   }
 
   let optionalImage: { buffer: Buffer; mimeType: string } | undefined;
   if (imageEntry instanceof File && imageEntry.size > 0) {
     const v = validateImageFile(imageEntry);
     if (!v.ok) {
-      return jsonError(400, "INVALID_IMAGE", v.message);
+      return fail(400, "INVALID_IMAGE", v.message);
     }
     const buf = Buffer.from(await v.file.arrayBuffer());
     optionalImage = { buffer: buf, mimeType: v.file.type };
@@ -107,9 +131,17 @@ export async function POST(request: Request) {
       });
     }
     if (existing?.status === "pending") {
-      return jsonError(409, "IN_PROGRESS", "Ova generacija je već u toku.", {
-        id: existing.id,
+      return fail(409, "IN_PROGRESS", "Ova generacija je već u toku.", {
+        generation_id: existing.id,
       });
+    }
+    if (existing?.status === "failed") {
+      return fail(
+        409,
+        "IDEMPOTENCY_FAILED",
+        "Prethodni pokušaj sa ovim idempotency ključem nije uspeo. Upotrebi novi ključ ili ga izostavi.",
+        { generation_id: existing.id }
+      );
     }
   }
 
@@ -132,10 +164,10 @@ export async function POST(request: Request) {
 
   if (insErr || !row) {
     if (insErr?.code === "23505") {
-      return jsonError(409, "DUPLICATE", "Idempotency ključ je već iskorišćen.");
+      return fail(409, "DUPLICATE", "Idempotency ključ je već iskorišćen.");
     }
     console.error(insErr);
-    return jsonError(500, "DB_INSERT", "Ne mogu da kreiram generaciju.");
+    return fail(500, "DB_INSERT", "Ne mogu da kreiram generaciju.");
   }
 
   const genId = row.id;
@@ -159,7 +191,7 @@ export async function POST(request: Request) {
         })
         .eq("id", genId)
         .eq("user_id", user.id);
-      return jsonError(500, "STORAGE_INPUT", "Upload ulazne slike nije uspeo.");
+      return fail(500, "STORAGE_INPUT", "Upload ulazne slike nije uspeo.");
     }
     finalInputPath = inPath;
     await supabase
@@ -186,12 +218,8 @@ export async function POST(request: Request) {
       })
       .eq("id", genId)
       .eq("user_id", user.id);
-    return jsonError(
-      503,
-      "AI_FAILED",
-      "OpenAI nije uspeo posle više pokušaja. Proveri OPENAI_API_KEY i model.",
-      { detail: msg }
-    );
+    const r = copyOpenAiFailureResponse(msg);
+    return fail(r.status, r.code, r.message, r.details);
   }
 
   await supabase
@@ -213,11 +241,11 @@ export async function POST(request: Request) {
   });
 
   if ("error" in consume) {
-    return jsonError(
+    return fail(
       500,
       "DEBIT_FAILED",
       "Tekst je sačuvan, ali skidanje kredita nije uspelo. Javi podršci.",
-      { generation_id: genId, code: consume.error }
+      { generation_id: genId, debit_code: consume.error }
     );
   }
 

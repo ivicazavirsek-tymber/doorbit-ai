@@ -7,6 +7,8 @@
     "dev:clean": "node scripts/clear-next-dev-lock.mjs && next dev",
     "grant-tokens": "node scripts/grant-dev-tokens.mjs",
     "confirm-email": "node scripts/confirm-dev-email.mjs",
+    "verify:ai": "node scripts/verify-ai-keys.mjs",
+    "verify:gemini-image": "node scripts/verify-gemini-image.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -18,7 +20,8 @@
     "next": "16.2.1",
     "openai": "^6.33.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "stripe": "^21.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

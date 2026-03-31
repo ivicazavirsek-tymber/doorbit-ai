@@ -1,11 +1,13 @@
 import { checkRateLimitAllowed } from "@/lib/api/rate-limit";
 import { consumeCredits } from "@/lib/api/consume-credits";
-import { jsonError, jsonOk } from "@/lib/api/http";
+import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
 import { getTokenBalance } from "@/lib/api/token-balance";
 import { geminiImageFromPhoto } from "@/lib/ai/gemini-image";
 import {
   CREDIT_COST_IMAGE,
+  MAX_GENERATION_TEXT_CHARS,
   RATE_LIMIT_PER_ROUTE_PER_MINUTE,
+  RATE_LIMIT_RETRY_AFTER_SEC,
 } from "@/lib/generation/constants";
 import { signedUrlForOutput } from "@/lib/generation/sign-url";
 import { extForMime, validateImageFile } from "@/lib/generation/validate-upload";
@@ -14,19 +16,28 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 
 export async function POST(request: Request) {
+  const requestId = newRequestId();
+  const fail = (
+    status: number,
+    code: string,
+    message: string,
+    details?: unknown,
+    headers?: HeadersInit
+  ) => jsonError(status, code, message, details, { requestId, headers });
+
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return jsonError(401, "UNAUTHORIZED", "Prijavi se.");
+    return fail(401, "UNAUTHORIZED", "Prijavi se.");
   }
 
   let service;
   try {
     service = createServiceRoleClient();
   } catch {
-    return jsonError(
+    return fail(
       500,
       "SERVER_CONFIG",
       "Nedostaje SUPABASE_SERVICE_ROLE_KEY na serveru."
@@ -40,15 +51,17 @@ export async function POST(request: Request) {
     RATE_LIMIT_PER_ROUTE_PER_MINUTE
   );
   if (!okRate) {
-    return jsonError(429, "RATE_LIMIT", "Previše zahteva. Pokušaj za minut.");
+    return fail(429, "RATE_LIMIT", "Previše zahteva. Pokušaj za minut.", undefined, {
+      "Retry-After": String(RATE_LIMIT_RETRY_AFTER_SEC),
+    });
   }
 
   const balance = await getTokenBalance(supabase, user.id);
   if (balance === null) {
-    return jsonError(500, "BALANCE", "Ne mogu da pročitam stanje kredita.");
+    return fail(500, "BALANCE_READ_FAILED", "Ne mogu da pročitam stanje kredita.");
   }
   if (balance < CREDIT_COST_IMAGE) {
-    return jsonError(402, "INSUFFICIENT_TOKENS", "Nemaš dovoljno kredita.", {
+    return fail(402, "INSUFFICIENT_TOKENS", "Nemaš dovoljno kredita.", {
       balance_tokens: balance,
       required: CREDIT_COST_IMAGE,
     });
@@ -56,25 +69,41 @@ export async function POST(request: Request) {
 
   const ct = request.headers.get("content-type") || "";
   if (!ct.includes("multipart/form-data")) {
-    return jsonError(
+    return fail(
       400,
       "INVALID_CONTENT_TYPE",
       "Koristi multipart/form-data (photo, side_description, opciono idempotency_key)."
     );
   }
 
-  const form = await request.formData();
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return fail(
+      413,
+      "PAYLOAD_TOO_LARGE",
+      "Zahtev je prevelik ili telo nije validno multipart polje."
+    );
+  }
+
   const photoEntry = form.get("photo");
   const side_description = String(form.get("side_description") || "").trim();
   const idempotency_key = String(form.get("idempotency_key") || "").trim();
 
   if (!(photoEntry instanceof File)) {
-    return jsonError(400, "INVALID_INPUT", "Polje photo (fajl) je obavezno.");
+    return fail(400, "INVALID_INPUT", "Polje photo (fajl) je obavezno.");
+  }
+
+  if (side_description.length > MAX_GENERATION_TEXT_CHARS) {
+    return fail(400, "INPUT_TOO_LONG", "Polje side_description je predugačko.", {
+      max_chars: MAX_GENERATION_TEXT_CHARS,
+    });
   }
 
   const v = validateImageFile(photoEntry);
   if (!v.ok) {
-    return jsonError(400, "INVALID_IMAGE", v.message);
+    return fail(400, "INVALID_IMAGE", v.message);
   }
 
   const photoBuf = Buffer.from(await v.file.arrayBuffer());
@@ -94,6 +123,14 @@ export async function POST(request: Request) {
         supabase,
         existing.output_image_storage_path
       );
+      if (existing.output_image_storage_path && !url) {
+        return fail(
+          500,
+          "SIGN_URL_FAILED",
+          "Ne mogu da napravim privremeni link za sliku.",
+          { generation_id: existing.id }
+        );
+      }
       return jsonOk({
         cached: true,
         generation: {
@@ -107,9 +144,17 @@ export async function POST(request: Request) {
       });
     }
     if (existing?.status === "pending") {
-      return jsonError(409, "IN_PROGRESS", "Ova generacija je već u toku.", {
-        id: existing.id,
+      return fail(409, "IN_PROGRESS", "Ova generacija je već u toku.", {
+        generation_id: existing.id,
       });
+    }
+    if (existing?.status === "failed") {
+      return fail(
+        409,
+        "IDEMPOTENCY_FAILED",
+        "Prethodni pokušaj sa ovim idempotency ključem nije uspeo. Upotrebi novi ključ ili ga izostavi.",
+        { generation_id: existing.id }
+      );
     }
   }
 
@@ -131,10 +176,10 @@ export async function POST(request: Request) {
 
   if (insErr || !row) {
     if (insErr?.code === "23505") {
-      return jsonError(409, "DUPLICATE", "Idempotency ključ je već iskorišćen.");
+      return fail(409, "DUPLICATE", "Idempotency ključ je već iskorišćen.");
     }
     console.error(insErr);
-    return jsonError(500, "DB_INSERT", "Ne mogu da kreiram generaciju.");
+    return fail(500, "DB_INSERT", "Ne mogu da kreiram generaciju.");
   }
 
   const genId = row.id;
@@ -157,7 +202,7 @@ export async function POST(request: Request) {
       })
       .eq("id", genId)
       .eq("user_id", user.id);
-    return jsonError(500, "STORAGE_INPUT", "Upload fotografije nije uspeo.");
+    return fail(500, "STORAGE_INPUT", "Upload fotografije nije uspeo.");
   }
 
   await supabase
@@ -180,7 +225,7 @@ export async function POST(request: Request) {
       })
       .eq("id", genId)
       .eq("user_id", user.id);
-    return jsonError(
+    return fail(
       503,
       "AI_FAILED",
       "Model za slike nije uspeo posle više pokušaja.",
@@ -206,7 +251,7 @@ export async function POST(request: Request) {
       })
       .eq("id", genId)
       .eq("user_id", user.id);
-    return jsonError(500, "STORAGE_OUTPUT", "Čuvanje generisane slike nije uspelo.");
+    return fail(500, "STORAGE_OUTPUT", "Čuvanje generisane slike nije uspelo.");
   }
 
   await supabase
@@ -228,17 +273,25 @@ export async function POST(request: Request) {
   });
 
   if ("error" in consume) {
-    return jsonError(
+    return fail(
       500,
       "DEBIT_FAILED",
       "Slika je sačuvana, ali skidanje kredita nije uspelo. Javi podršci.",
-      { generation_id: genId, code: consume.error }
+      { generation_id: genId, debit_code: consume.error }
     );
   }
 
   const balanceAfter = consume.newBalance;
 
   const signed = await signedUrlForOutput(supabase, outPath);
+  if (!signed) {
+    return fail(
+      500,
+      "SIGN_URL_FAILED",
+      "Slika je sačuvana, ali privremeni link nije mogao da se napravi.",
+      { generation_id: genId }
+    );
+  }
 
   return jsonOk({
     generation: {

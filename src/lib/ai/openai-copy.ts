@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import OpenAI, { APIError } from "openai";
 import { getOpenAIApiKey, getOpenAITextModel } from "@/lib/env";
 import { callWithRetry } from "@/lib/retry";
 
@@ -37,19 +37,41 @@ export async function openaiGenerateCopy(params: {
     });
   }
 
-  return callWithRetry(async () => {
-    const res = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: parts,
-        },
-      ],
-      max_completion_tokens: 2048,
-    });
-    const out = res.choices[0]?.message?.content?.trim();
-    if (!out) throw new Error("OPENAI_EMPTY_OUTPUT");
-    return out;
-  });
+  return callWithRetry(
+    async () => {
+      try {
+        const res = await client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: parts,
+            },
+          ],
+          max_completion_tokens: 2048,
+        });
+        const out = res.choices[0]?.message?.content?.trim();
+        if (!out) throw new Error("OPENAI_EMPTY_OUTPUT");
+        return out;
+      } catch (e) {
+        if (e instanceof APIError) {
+          if (e.status === 429) {
+            throw new Error(
+              "OPENAI_QUOTA: Na OpenAI nalogu nema dostupne kvote (HTTP 429). U platform.openai.com proveri naplatu i limite — DoorBit tokeni su nezavisni i ne plaćaju OpenAI."
+            );
+          }
+          throw new Error(`OPENAI_API_${e.status ?? "?"}: ${e.message}`);
+        }
+        throw e;
+      }
+    },
+    {
+      retryIf: (err) =>
+        !(
+          err instanceof Error &&
+          (err.message.startsWith("OPENAI_QUOTA") ||
+            /^OPENAI_API_(400|401|403|404|413|422|429)\b/.test(err.message))
+        ),
+    }
+  );
 }

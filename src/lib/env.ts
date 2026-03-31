@@ -1,6 +1,42 @@
-function appEnv(): "dev" | "prod" {
+export function appEnv(): "dev" | "prod" {
   const v = process.env.APP_ENV?.toLowerCase();
   return v === "prod" ? "prod" : "dev";
+}
+
+/** Bazni URL aplikacije (success/cancel Stripe, portal). */
+export function getAppBaseUrl(): string {
+  const u =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.VERCEL_URL ||
+    "";
+  if (!u) return "";
+  if (u.startsWith("http")) return u.replace(/\/$/, "");
+  return `https://${u.replace(/\/$/, "")}`;
+}
+
+export function getStripeSecretKey(): string {
+  return appEnv() === "prod"
+    ? process.env.STRIPE_SECRET_KEY_PROD || ""
+    : process.env.STRIPE_SECRET_KEY_DEV ||
+        process.env.STRIPE_SECRET_KEY ||
+        "";
+}
+
+export function getStripeWebhookSecret(): string {
+  return appEnv() === "prod"
+    ? process.env.STRIPE_WEBHOOK_SECRET_PROD || ""
+    : process.env.STRIPE_WEBHOOK_SECRET_DEV ||
+        process.env.STRIPE_WEBHOOK_SECRET ||
+        "";
+}
+
+/** Javni ključ za Stripe.js (ako kasnije treba Elements). */
+export function getStripePublishableKey(): string {
+  return appEnv() === "prod"
+    ? process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY_PROD || ""
+    : process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY_DEV ||
+        process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ||
+        "";
 }
 
 /** URL za Supabase (u browseru mora biti NEXT_PUBLIC_*). */
@@ -55,7 +91,7 @@ export function getOpenAITextModel(): string {
 }
 
 export function getGeminiImageModel(): string {
-  return process.env.GEMINI_IMAGE_MODEL || "gemini-3-pro-image-preview";
+  return process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
 }
 
 export function getMaxUploadBytes(): number {

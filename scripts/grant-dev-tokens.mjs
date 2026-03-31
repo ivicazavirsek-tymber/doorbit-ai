@@ -3,7 +3,7 @@
  * Koristi SUPABASE_SERVICE_ROLE_KEY iz .env.local — ne commituj taj ključ.
  *
  * Upotreba:
- *   npm run grant-tokens -- tvoj@email.com 500
+ *   npm run grant-tokens -- korisnik@example.com 500
  *   npm run grant-tokens -- 967e4b25-668e-4423-acc8-3a8a8f4d1c13 500
  */
 
@@ -71,16 +71,21 @@ async function main() {
 Korišćenje:
   npm run grant-tokens -- <email ILI user-uuid> [iznos]
 
-Primeri:
-  npm run grant-tokens -- zavirsek@live.com 500
+Primeri (zameni email stvarnim nalogom iz Supabase auth):
+  npm run grant-tokens -- ime.prezime@gmail.com 500
   npm run grant-tokens -- 967e4b25-668e-4423-acc8-3a8a8f4d1c13 500
 
 Podrazumevani iznos ako ga izostaviš: 500
 `);
-    process.exit(1);
+    return 1;
   }
 
-  const amount = Math.max(0, parseInt(arg2 || "500", 10) || 500);
+  // Napomena: `parseInt(...) || 500` tretira 0 kao „falsy“ i vraća 500 — zato eksplicitno za arg2.
+  const amountRaw = process.argv[3];
+  const amount =
+    amountRaw === undefined || amountRaw === ""
+      ? 500
+      : Math.max(0, Number.parseInt(amountRaw, 10) || 0);
   const url = getUrl();
   const key = getServiceKey();
 
@@ -88,7 +93,7 @@ Podrazumevani iznos ako ga izostaviš: 500
     console.error(
       "Greška: u .env.local moraju biti NEXT_PUBLIC_SUPABASE_URL (ili SUPABASE_URL_DEV) i SUPABASE_SERVICE_ROLE_KEY_DEV."
     );
-    process.exit(1);
+    return 1;
   }
 
   const supabase = createClient(url, key, {
@@ -101,13 +106,13 @@ Podrazumevani iznos ako ga izostaviš: 500
       const id = await findUserIdByEmail(supabase, userId);
       if (!id) {
         console.error("Nisam našao korisnika sa emailom:", userId);
-        process.exit(1);
+        return 1;
       }
       console.log("Pronađen korisnik:", userId, "→", id);
       userId = id;
     } catch (e) {
       console.error("Auth admin listUsers greška:", e?.message || e);
-      process.exit(1);
+      return 1;
     }
   }
 
@@ -122,13 +127,18 @@ Podrazumevani iznos ako ga izostaviš: 500
 
   if (upErr) {
     console.error("Upsert credit_balances neuspeo:", upErr.message);
-    process.exit(1);
+    return 1;
   }
 
   console.log("Gotovo. balance_tokens =", up.balance_tokens);
+  return 0;
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exit(typeof code === "number" ? code : 0);
+  })
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { BillingPortalButton } from "@/components/dashboard/billing-button";
+import { DashboardGenerations } from "@/components/dashboard/dashboard-generations";
 import { SignOutButton } from "@/components/sign-out-button";
 import { createClient } from "@/lib/supabase/server";
 
@@ -48,9 +50,8 @@ export default async function DashboardPage() {
           </span>
           .
         </p>
-        <p className="mt-6 text-sm text-zinc-500">
-          Ovde će ići AI alati i istorija (Faza 5+).
-        </p>
+        <DashboardGenerations />
+        <BillingPortalButton />
       </main>
     </div>
   );
