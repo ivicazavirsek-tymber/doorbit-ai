@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { BillingPortalButton } from "@/components/dashboard/billing-button";
 import { DashboardGenerations } from "@/components/dashboard/dashboard-generations";
+import { SubscriptionStatusCard } from "@/components/dashboard/subscription-status";
 import { SignOutButton } from "@/components/sign-out-button";
 import { createClient } from "@/lib/supabase/server";
 
@@ -19,6 +20,14 @@ export default async function DashboardPage() {
     .from("profiles")
     .select("display_name, role")
     .eq("user_id", user.id)
+    .maybeSingle();
+
+  const { data: sub } = await supabase
+    .from("stripe_subscriptions")
+    .select("plan_key, status, cancel_at_period_end, current_period_end")
+    .eq("user_id", user.id)
+    .order("current_period_end", { ascending: false, nullsFirst: false })
+    .limit(1)
     .maybeSingle();
 
   return (
@@ -50,6 +59,12 @@ export default async function DashboardPage() {
           </span>
           .
         </p>
+        <SubscriptionStatusCard
+          planKey={sub?.plan_key ?? null}
+          status={sub?.status ?? null}
+          cancelAtPeriodEnd={sub?.cancel_at_period_end ?? null}
+          currentPeriodEnd={sub?.current_period_end ?? null}
+        />
         <DashboardGenerations />
         <BillingPortalButton />
       </main>

@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       : "";
   if (!isStripePlanKey(planKeyRaw)) {
     return fail(400, "INVALID_INPUT", "Nepoznat plan_key.", {
-      allowed: ["starter_monthly", "pro_monthly", "starter_yearly"],
+      allowed: ["starter_monthly", "pro_monthly", "starter_yearly", "pro_yearly"],
     });
   }
   const planKey = planKeyRaw as StripePlanKey;

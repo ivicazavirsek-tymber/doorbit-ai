@@ -61,12 +61,37 @@ Next.js (App Router) · TypeScript · Tailwind · Supabase (Auth, Postgres, RLS,
 
 ## Faza 7 (Stripe — šta uraditi lokalno)
 
-1. U Stripe Dashboard kreiraj **Products** i **Prices** (mesečno/godišnje) i kopiraj Price ID u `STRIPE_PRICE_*_ID_DEV` u `.env.local`.
+1. U Stripe Dashboard kreiraj **Products** i **Prices** (mesečno/godišnje) i kopiraj Price ID u `STRIPE_PRICE_*_ID_DEV` u `.env.local` (uključujući i `STRIPE_PRICE_PRO_YEARLY_ID_DEV`).
 2. Postavi **`NEXT_PUBLIC_APP_URL`** (npr. `http://localhost:3000`).
 3. **`STRIPE_WEBHOOK_SECRET_DEV`**: lokalno `stripe listen --forward-to localhost:3000/api/stripe/webhook` pa kopiraj signing secret.
 4. Primeni migraciju `20260330120000_service_grant_tokens.sql` na Supabase (`supabase db push` ili SQL Editor).
 5. U Stripe → Webhooks (test), dodaj endpoint kada deployuješ; za dev koristi Stripe CLI.
 
+### Trenutne cene (DEV / Stripe test)
+
+| Plan key | Price ID | Iznos |
+|---|---|---|
+| `starter_monthly` | `price_1TH5c1BSdb8AjNiPs0yyN8Zg` | `19.99 EUR / month` |
+| `pro_monthly` | `price_1TH5x1BSdb8AjNiPPJnZSnU7` | `49.99 USD / month` |
+| `starter_yearly` | `price_1TH5c1BSdb8AjNiPI68W88uT` | `190.00 USD / year` |
+| `pro_yearly` | `price_1TH5y4BSdb8AjNiPPybeuX7E` | `480.00 EUR / year` |
+
+Napomena: valute su trenutno mešane (EUR/USD). To tehnički radi, ali je obično bolje da svi planovi budu u istoj valuti.
+
+### Otkazivanje pretplate — očekivana logika i test
+
+- Kada korisnik otkaže u Stripe portalu sa opcijom **cancel at period end**, pretplata ostaje aktivna do `current_period_end`.
+- Primer: ako je period `01.02 → 01.03` i korisnik otkaže `25.02`, pristup važi do `01.03` (ne prekida se odmah).
+- Na dashboardu prikazujemo: plan, status, datum važenja i poruku „otkazana, ali važi do ...“ kada je `cancel_at_period_end=true`.
+
+**Checklist testiranja (DEV):**
+1. Korisnik ima aktivnu pretplatu (`starter_monthly`, `pro_monthly`, `starter_yearly` ili `pro_yearly`).
+2. Uđi u Stripe portal preko Dashboard dugmeta i otkaži pretplatu (**at period end**).
+3. Potvrdi da webhook primi `customer.subscription.updated` (HTTP 200).
+4. U `stripe_subscriptions` proveri `cancel_at_period_end=true`, status i `current_period_end`.
+5. U aplikaciji proveri da je poruka o otkazivanju vidljiva i da korisnik i dalje ima pristup do kraja perioda.
+6. Posle period end-a (ili simulacijom vremena), status treba da pređe u neaktivan i pristup da bude ukinut.
+
 ## Poslednje ažuriranje plana
 
-2026-03-31 — Gemini slike: podrazumevani model `gemini-2.5-flash-image`, `verify:gemini-image` / `verify:ai`, duži HTTP timeout za slike, retry pravila; `grant-tokens` bez naglog `process.exit` u async (Windows). Faza 7 ostaje završena; Faza 9 delimično (pricing + dashboard generacije). Kod sinhronizovan sa GitHub (`main`).
+2026-03-31 — Gemini slike: podrazumevani model `gemini-2.5-flash-image`, `verify:gemini-image` / `verify:ai`, duži HTTP timeout za slike, retry pravila; `grant-tokens` bez naglog `process.exit` u async (Windows). Stripe proširen za `pro_yearly` plan (kod + env + migracija + cene u planu). Dodata kartica statusa pretplate na dashboardu (uključujući „otkazana, ali važi do kraja perioda“). Faza 7 ostaje završena; Faza 9 delimično (pricing + dashboard generacije). Kod sinhronizovan sa GitHub (`main`).

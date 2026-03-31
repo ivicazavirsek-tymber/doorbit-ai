@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 
-type PlanKey = "starter_monthly" | "pro_monthly" | "starter_yearly";
+type PlanKey =
+  | "starter_monthly"
+  | "pro_monthly"
+  | "starter_yearly"
+  | "pro_yearly";
 
 export function SubscribeButtons() {
   const [busy, setBusy] = useState<PlanKey | null>(null);
@@ -41,7 +45,7 @@ export function SubscribeButtons() {
   return (
     <div className="mt-8 space-y-4">
       {err ? <p className="text-sm text-red-400">{err}</p> : null}
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
           <h2 className="text-lg font-semibold text-zinc-100">Starter</h2>
           <p className="mt-1 text-xs text-zinc-500">Mesečno</p>
@@ -85,6 +89,21 @@ export function SubscribeButtons() {
             onClick={() => void go("starter_yearly")}
           >
             {busy === "starter_yearly" ? "…" : "Pretplati se"}
+          </button>
+        </div>
+        <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 p-5 ring-1 ring-sky-800/30">
+          <h2 className="text-lg font-semibold text-zinc-100">Pro</h2>
+          <p className="mt-1 text-xs text-zinc-500">Godišnje</p>
+          <p className="mt-3 text-sm text-zinc-400">
+            Najveći paket tokena uz godišnju naplatu.
+          </p>
+          <button
+            type="button"
+            disabled={busy !== null}
+            className={`${btn} ${secondary} mt-4 w-full`}
+            onClick={() => void go("pro_yearly")}
+          >
+            {busy === "pro_yearly" ? "…" : "Pretplati se"}
           </button>
         </div>
       </div>
