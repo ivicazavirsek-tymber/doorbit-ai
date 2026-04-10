@@ -54,11 +54,34 @@ export async function updateSession(request: NextRequest) {
     return redirect;
   }
 
-  if (path.startsWith("/dashboard")) {
+  if (path.startsWith("/dashboard") || path.startsWith("/onboarding")) {
     if (!user) {
       const login = new URL("/login", request.url);
       login.searchParams.set("next", path);
       const redirect = NextResponse.redirect(login);
+      copyCookies(supabaseResponse, redirect);
+      return redirect;
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("onboarding_completed, role")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (
+      path.startsWith("/dashboard") &&
+      profile &&
+      !profile.onboarding_completed &&
+      profile.role !== "admin"
+    ) {
+      const redirect = NextResponse.redirect(new URL("/onboarding", request.url));
+      copyCookies(supabaseResponse, redirect);
+      return redirect;
+    }
+
+    if (path.startsWith("/onboarding") && profile?.onboarding_completed) {
+      const redirect = NextResponse.redirect(new URL("/dashboard", request.url));
       copyCookies(supabaseResponse, redirect);
       return redirect;
     }

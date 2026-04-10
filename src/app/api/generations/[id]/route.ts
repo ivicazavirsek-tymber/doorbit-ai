@@ -1,3 +1,4 @@
+import { getEffectiveUserId } from "@/lib/admin/impersonation";
 import { createClient } from "@/lib/supabase/server";
 import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
 import { signedUrlForOutput } from "@/lib/generation/sign-url";
@@ -15,11 +16,13 @@ export async function GET(_request: Request, { params }: Params) {
     return jsonError(401, "UNAUTHORIZED", "Prijavi se.", undefined, { requestId });
   }
 
+  const subjectUserId = await getEffectiveUserId(supabase, user.id);
+
   const { data, error } = await supabase
     .from("ai_generations")
     .select("*")
     .eq("id", id)
-    .eq("user_id", user.id)
+    .eq("user_id", subjectUserId)
     .maybeSingle();
 
   if (error) {

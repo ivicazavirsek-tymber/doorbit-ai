@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:stripe": "concurrently -k -n stripe,next -c cyan,magenta \"stripe listen --forward-to localhost:3000/api/stripe/webhook\" \"next dev\"",
     "dev:clean": "node scripts/clear-next-dev-lock.mjs && next dev",
     "grant-tokens": "node scripts/grant-dev-tokens.mjs",
     "confirm-email": "node scripts/confirm-dev-email.mjs",
@@ -28,6 +29,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^9.2.0",
     "dotenv": "^17.3.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.1",

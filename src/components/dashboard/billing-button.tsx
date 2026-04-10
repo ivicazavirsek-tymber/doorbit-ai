@@ -2,7 +2,10 @@
 
 import { useState } from "react";
 
-export function BillingPortalButton() {
+export function BillingPortalButton({ hidden = false }: { hidden?: boolean }) {
+  if (hidden) {
+    return null;
+  }
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 

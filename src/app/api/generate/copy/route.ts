@@ -1,7 +1,8 @@
 import { checkRateLimitAllowed } from "@/lib/api/rate-limit";
 import { consumeCredits } from "@/lib/api/consume-credits";
-import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
-import { copyOpenAiFailureResponse } from "@/lib/api/openai-route-error";
+import { generationFail } from "@/lib/api/generation-http";
+import { jsonOk, newRequestId } from "@/lib/api/http";
+import { copyOpenAiFailureMeta } from "@/lib/api/openai-route-error";
 import { getTokenBalance } from "@/lib/api/token-balance";
 import { openaiGenerateCopy } from "@/lib/ai/openai-copy";
 import {
@@ -12,6 +13,8 @@ import {
 } from "@/lib/generation/constants";
 import { extForMime, validateImageFile } from "@/lib/generation/validate-upload";
 import { getOpenAITextModel } from "@/lib/env";
+import { getEffectiveUserId } from "@/lib/admin/impersonation";
+import { buildGenerationContextForUser } from "@/lib/ai/generation-context";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 
@@ -20,10 +23,11 @@ export async function POST(request: Request) {
   const fail = (
     status: number,
     code: string,
-    message: string,
+    internalMessage: string,
     details?: unknown,
     headers?: HeadersInit
-  ) => jsonError(status, code, message, details, { requestId, headers });
+  ) =>
+    generationFail({ requestId, status, code, internalMessage, details, headers });
 
   const supabase = await createClient();
   const {
@@ -32,6 +36,9 @@ export async function POST(request: Request) {
   if (!user) {
     return fail(401, "UNAUTHORIZED", "Prijavi se.");
   }
+
+  const subjectUserId = await getEffectiveUserId(supabase, user.id);
+  const contextHint = await buildGenerationContextForUser(supabase, subjectUserId);
 
   let service;
   try {
@@ -46,7 +53,7 @@ export async function POST(request: Request) {
 
   const okRate = await checkRateLimitAllowed(
     service,
-    user.id,
+    subjectUserId,
     "generate_copy",
     RATE_LIMIT_PER_ROUTE_PER_MINUTE
   );
@@ -56,7 +63,7 @@ export async function POST(request: Request) {
     });
   }
 
-  const balance = await getTokenBalance(supabase, user.id);
+  const balance = await getTokenBalance(supabase, subjectUserId);
   if (balance === null) {
     return fail(500, "BALANCE_READ_FAILED", "Ne mogu da pročitam stanje kredita.");
   }
@@ -113,7 +120,7 @@ export async function POST(request: Request) {
     const { data: existing } = await supabase
       .from("ai_generations")
       .select("*")
-      .eq("user_id", user.id)
+      .eq("user_id", subjectUserId)
       .eq("generation_type", "copy_from_optional_image")
       .eq("idempotency_key", idempotency_key)
       .maybeSingle();
@@ -148,7 +155,7 @@ export async function POST(request: Request) {
   const { data: row, error: insErr } = await supabase
     .from("ai_generations")
     .insert({
-      user_id: user.id,
+      user_id: subjectUserId,
       generation_type: "copy_from_optional_image",
       status: "pending",
       credits_cost: CREDIT_COST_COPY,
@@ -174,7 +181,7 @@ export async function POST(request: Request) {
   let finalInputPath: string | null = null;
 
   if (optionalImage) {
-    const inPath = `${user.id}/${genId}/input.${extForMime(optionalImage.mimeType)}`;
+    const inPath = `${subjectUserId}/${genId}/input.${extForMime(optionalImage.mimeType)}`;
     const { error: inUp } = await supabase.storage
       .from("generation-inputs")
       .upload(inPath, optionalImage.buffer, {
@@ -190,7 +197,7 @@ export async function POST(request: Request) {
           completed_at: new Date().toISOString(),
         })
         .eq("id", genId)
-        .eq("user_id", user.id);
+        .eq("user_id", subjectUserId);
       return fail(500, "STORAGE_INPUT", "Upload ulazne slike nije uspeo.");
     }
     finalInputPath = inPath;
@@ -198,7 +205,7 @@ export async function POST(request: Request) {
       .from("ai_generations")
       .update({ input_image_storage_path: inPath })
       .eq("id", genId)
-      .eq("user_id", user.id);
+      .eq("user_id", subjectUserId);
   }
 
   let copy: string;
@@ -206,6 +213,7 @@ export async function POST(request: Request) {
     copy = await openaiGenerateCopy({
       brief: text_preferences,
       image: optionalImage,
+      ...(contextHint ? { contextHint } : {}),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "AI greška";
@@ -217,9 +225,9 @@ export async function POST(request: Request) {
         completed_at: new Date().toISOString(),
       })
       .eq("id", genId)
-      .eq("user_id", user.id);
-    const r = copyOpenAiFailureResponse(msg);
-    return fail(r.status, r.code, r.message, r.details);
+      .eq("user_id", subjectUserId);
+    const meta = copyOpenAiFailureMeta(msg);
+    return fail(meta.status, meta.code, msg);
   }
 
   await supabase
@@ -230,10 +238,10 @@ export async function POST(request: Request) {
       completed_at: new Date().toISOString(),
     })
     .eq("id", genId)
-    .eq("user_id", user.id);
+    .eq("user_id", subjectUserId);
 
   const consume = await consumeCredits(service, {
-    userId: user.id,
+    userId: subjectUserId,
     amount: CREDIT_COST_COPY,
     reason: "generation:copy_from_optional_image",
     idempotencyKey: `consume_gen:${genId}`,

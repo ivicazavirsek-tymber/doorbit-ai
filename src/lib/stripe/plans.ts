@@ -20,10 +20,10 @@ export function isStripePlanKey(s: string): s is StripePlanKey {
 
 /** Podrazumevani mesečni/godišnji priliv tokena po planu (može override preko env). */
 const DEFAULT_TOKEN_GRANTS: Record<StripePlanKey, number> = {
-  starter_monthly: 500,
-  pro_monthly: 2000,
-  starter_yearly: 6000,
-  pro_yearly: 24000,
+  starter_monthly: 1000,
+  pro_monthly: 3000,
+  starter_yearly: 12000,
+  pro_yearly: 36000,
 };
 
 const ENV_TOKEN_KEYS: Record<StripePlanKey, string> = {

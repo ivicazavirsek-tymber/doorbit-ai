@@ -5,29 +5,17 @@ import { getStripeWebhookSecret } from "@/lib/env";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 import { getStripe } from "@/lib/stripe/server";
 import {
+  mapStripeSubscriptionStatus,
+  syncCheckoutSessionCompletion,
+  upsertStripeSubscription,
+} from "@/lib/stripe/sync-checkout";
+import {
   getTokenGrantForPlan,
-  isStripePlanKey,
   planKeyFromStripePriceId,
-  type StripePlanKey,
 } from "@/lib/stripe/plans";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function subscriptionPeriodBounds(sub: Stripe.Subscription): {
-  start: number;
-  end: number;
-} {
-  const item = sub.items?.data?.[0];
-  if (item?.current_period_start != null && item?.current_period_end != null) {
-    return {
-      start: item.current_period_start,
-      end: item.current_period_end,
-    };
-  }
-  const sd = sub.start_date ?? sub.created;
-  return { start: sd, end: sd };
-}
 
 /** Noviji Invoice objekti nose pretplatu preko `parent.subscription_details`. */
 function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
@@ -43,93 +31,6 @@ function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
       : anyInv.subscription.id;
   }
   return null;
-}
-
-function mapStripeSubscriptionStatus(
-  s: Stripe.Subscription.Status
-): "active" | "trialing" | "past_due" | "canceled" | "incomplete" {
-  switch (s) {
-    case "active":
-      return "active";
-    case "trialing":
-      return "trialing";
-    case "past_due":
-      return "past_due";
-    case "canceled":
-      return "canceled";
-    case "unpaid":
-      return "past_due";
-    case "paused":
-      return "active";
-    case "incomplete":
-    case "incomplete_expired":
-    default:
-      return "incomplete";
-  }
-}
-
-async function upsertStripeSubscription(
-  service: SupabaseClient,
-  userId: string,
-  planKey: StripePlanKey,
-  sub: Stripe.Subscription
-) {
-  const { start, end } = subscriptionPeriodBounds(sub);
-  const { error } = await service.from("stripe_subscriptions").upsert(
-    {
-      user_id: userId,
-      stripe_subscription_id: sub.id,
-      plan_key: planKey,
-      status: mapStripeSubscriptionStatus(sub.status),
-      current_period_start: new Date(start * 1000).toISOString(),
-      current_period_end: new Date(end * 1000).toISOString(),
-      cancel_at_period_end: sub.cancel_at_period_end,
-    },
-    { onConflict: "stripe_subscription_id" }
-  );
-  if (error) throw new Error(error.message);
-}
-
-async function handleCheckoutSessionCompleted(
-  service: SupabaseClient,
-  stripe: Stripe,
-  session: Stripe.Checkout.Session
-) {
-  if (session.mode !== "subscription") return;
-
-  const userId = session.metadata?.user_id;
-  const planKeyRaw = session.metadata?.plan_key;
-  if (!userId || !planKeyRaw || !isStripePlanKey(planKeyRaw)) {
-    console.warn("checkout.session.completed: missing metadata", session.id);
-    return;
-  }
-  const planKey = planKeyRaw as StripePlanKey;
-
-  const customerId =
-    typeof session.customer === "string" ? session.customer : null;
-  const subId =
-    typeof session.subscription === "string" ? session.subscription : null;
-  if (!customerId || !subId) return;
-
-  const { error: cErr } = await service.from("stripe_customers").upsert(
-    { user_id: userId, stripe_customer_id: customerId },
-    { onConflict: "user_id" }
-  );
-  if (cErr) throw new Error(cErr.message);
-
-  const { error: chErr } = await service.from("checkout_sessions").upsert(
-    {
-      user_id: userId,
-      stripe_checkout_session_id: session.id,
-      plan_key: planKey,
-      status: "completed",
-    },
-    { onConflict: "stripe_checkout_session_id" }
-  );
-  if (chErr) throw new Error(chErr.message);
-
-  const sub = await stripe.subscriptions.retrieve(subId);
-  await upsertStripeSubscription(service, userId, planKey, sub);
 }
 
 async function handleInvoicePaid(
@@ -150,21 +51,40 @@ async function handleInvoicePaid(
       : invoice.customer?.id;
   if (!customerId) return;
 
+  const subId = invoiceSubscriptionId(invoice);
+  if (!subId) return;
+
+  const sub = await stripe.subscriptions.retrieve(subId);
+  const userIdFromSubMeta =
+    typeof sub.metadata?.user_id === "string" ? sub.metadata.user_id : null;
+
+  // U praksi invoice.paid ponekad stigne pre checkout.session.completed.
+  // Tada još nema stripe_customers reda; fallback je user_id iz subscription metadata.
   const { data: sc } = await service
     .from("stripe_customers")
     .select("user_id")
     .eq("stripe_customer_id", customerId)
     .maybeSingle();
 
-  if (!sc?.user_id) {
-    console.warn("invoice.paid: no stripe_customers row", customerId);
+  const resolvedUserId = sc?.user_id || userIdFromSubMeta;
+  if (!resolvedUserId) {
+    console.warn("invoice.paid: cannot resolve user", {
+      customerId,
+      subscriptionId: sub.id,
+    });
     return;
   }
 
-  const subId = invoiceSubscriptionId(invoice);
-  if (!subId) return;
+  if (!sc?.user_id) {
+    const { error: upErr } = await service.from("stripe_customers").upsert(
+      { user_id: resolvedUserId, stripe_customer_id: customerId },
+      { onConflict: "user_id" }
+    );
+    if (upErr) {
+      throw new Error(upErr.message);
+    }
+  }
 
-  const sub = await stripe.subscriptions.retrieve(subId);
   const priceId = sub.items.data[0]?.price?.id ?? sub.items.data[0]?.plan?.id;
   if (!priceId) return;
 
@@ -175,11 +95,15 @@ async function handleInvoicePaid(
   }
 
   const tokens = getTokenGrantForPlan(planKey);
+  const grantIdempotencyKey =
+    br === "subscription_create"
+      ? `stripe:substart:${sub.id}`
+      : `stripe:invoice:${invoice.id}`;
   const { error } = await service.rpc("service_grant_tokens", {
-    p_user_id: sc.user_id,
+    p_user_id: resolvedUserId,
     p_amount_tokens: tokens,
     p_reason: `stripe:invoice:${invoice.billing_reason}`,
-    p_idempotency_key: `stripe:invoice:${invoice.id}`,
+    p_idempotency_key: grantIdempotencyKey,
     p_related_generation_id: null,
     p_related_payment_id: invoice.id,
   });
@@ -268,7 +192,7 @@ export async function POST(request: Request) {
   try {
     switch (event.type) {
       case "checkout.session.completed":
-        await handleCheckoutSessionCompleted(
+        await syncCheckoutSessionCompletion(
           service,
           stripe,
           event.data.object as Stripe.Checkout.Session

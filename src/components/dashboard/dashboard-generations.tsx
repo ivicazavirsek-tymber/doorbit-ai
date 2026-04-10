@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   CREDIT_COST_COPY,
@@ -23,22 +24,48 @@ type ApiErrorBody = {
   error?: { code?: string; message?: string; details?: unknown };
 };
 
-/** API (npr. AI_FAILED) šalje tehnički razlog u `details.detail` — bez ovoga korisnik vidi samo generičku poruku. */
-function apiErrorDetailLine(details: unknown): string | null {
-  if (!details || typeof details !== "object") return null;
-  const rec = details as Record<string, unknown>;
-  if (typeof rec.detail === "string" && rec.detail.trim()) return rec.detail.trim();
-  return null;
-}
-
-function errorMessage(data: unknown): string {
+/**
+ * Prikazuje samo javnu `message` sa API-ja (bez lepljenja `details.detail` / sirovog spoljnog odgovora).
+ * Za `INSUFFICIENT_TOKENS` dopunjava jednu liniju sa brojevima ako su u `details`.
+ */
+function generationErrorMessage(data: unknown): string {
   const d = data as ApiErrorBody;
   const msg = d?.error?.message ?? "Neočekivana greška.";
-  const detail = apiErrorDetailLine(d?.error?.details);
-  if (detail && !msg.includes(detail)) {
-    return `${msg} (${detail})`;
+  const code = d?.error?.code;
+  const details = d?.error?.details;
+  if (code === "INSUFFICIENT_TOKENS" && details && typeof details === "object") {
+    const rec = details as Record<string, unknown>;
+    const bal = typeof rec.balance_tokens === "number" ? rec.balance_tokens : null;
+    const req = typeof rec.required === "number" ? rec.required : null;
+    if (bal !== null && req !== null) {
+      return `${msg} Trenutno: ${bal} tokena · potrebno: ${req}.`;
+    }
   }
   return msg;
+}
+
+function GenerationErrorBlock({ data }: { data: unknown }) {
+  if (typeof data === "string" && data.trim()) {
+    return <p className="mt-3 text-sm text-red-400">{data}</p>;
+  }
+  const d = data as ApiErrorBody;
+  const code = d?.error?.code;
+  const text = generationErrorMessage(data);
+  const showPricing =
+    code === "INSUFFICIENT_TOKENS" || code === "BALANCE_READ_FAILED";
+  return (
+    <p className="mt-3 text-sm text-red-400">
+      {text}{" "}
+      {showPricing ? (
+        <Link
+          href="/pricing"
+          className="font-medium text-sky-400 underline underline-offset-2 hover:text-sky-300"
+        >
+          Cenovnik i dopuna kredita
+        </Link>
+      ) : null}
+    </p>
+  );
 }
 
 export function DashboardGenerations() {
@@ -47,19 +74,19 @@ export function DashboardGenerations() {
 
   const [textPrompt, setTextPrompt] = useState("");
   const [imgTextBusy, setImgTextBusy] = useState(false);
-  const [imgTextErr, setImgTextErr] = useState<string | null>(null);
+  const [imgTextErr, setImgTextErr] = useState<unknown>(null);
   const [imgTextUrl, setImgTextUrl] = useState<string | null>(null);
 
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [sideDesc, setSideDesc] = useState("");
   const [imgPhotoBusy, setImgPhotoBusy] = useState(false);
-  const [imgPhotoErr, setImgPhotoErr] = useState<string | null>(null);
+  const [imgPhotoErr, setImgPhotoErr] = useState<unknown>(null);
   const [imgPhotoUrl, setImgPhotoUrl] = useState<string | null>(null);
 
   const [copyBrief, setCopyBrief] = useState("");
   const [copyImage, setCopyImage] = useState<File | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
-  const [copyErr, setCopyErr] = useState<string | null>(null);
+  const [copyErr, setCopyErr] = useState<unknown>(null);
   const [copyOut, setCopyOut] = useState<string | null>(null);
 
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -113,7 +140,7 @@ export function DashboardGenerations() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setImgTextErr(errorMessage(data));
+        setImgTextErr(data);
         return;
       }
       const url = (data as { generation?: { output_image_signed_url?: string } })
@@ -146,7 +173,7 @@ export function DashboardGenerations() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setImgPhotoErr(errorMessage(data));
+        setImgPhotoErr(data);
         return;
       }
       const url = (data as { generation?: { output_image_signed_url?: string } })
@@ -175,7 +202,7 @@ export function DashboardGenerations() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setCopyErr(errorMessage(data));
+        setCopyErr(data);
         return;
       }
       const text = (data as { generation?: { output_text?: string } }).generation
@@ -223,6 +250,20 @@ export function DashboardGenerations() {
         {CREDIT_COST_COPY} token.
       </p>
 
+      {balance !== null && balance < CREDIT_COST_IMAGE ? (
+        <div className="rounded-xl border border-amber-500/35 bg-amber-950/25 px-4 py-3 text-sm text-amber-100">
+          Za generisanje slike treba najmanje {CREDIT_COST_IMAGE} tokena (trenutno{" "}
+          {balance}).{" "}
+          <Link
+            href="/pricing"
+            className="font-medium text-amber-300 underline underline-offset-2 hover:text-amber-200"
+          >
+            Dopuni kredite na cenovniku
+          </Link>
+          .
+        </div>
+      ) : null}
+
       <section className={cardClass}>
         <h2 className="text-lg font-semibold text-zinc-100">Slika iz opisa</h2>
         <p className="mt-1 text-sm text-zinc-500">
@@ -251,9 +292,7 @@ export function DashboardGenerations() {
             {imgTextBusy ? "Generišem…" : `Generiši sliku (${CREDIT_COST_IMAGE} tokena)`}
           </button>
         </form>
-        {imgTextErr ? (
-          <p className="mt-3 text-sm text-red-400">{imgTextErr}</p>
-        ) : null}
+        {imgTextErr ? <GenerationErrorBlock data={imgTextErr} /> : null}
         {imgTextUrl ? (
           <div className="mt-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -307,9 +346,7 @@ export function DashboardGenerations() {
               : `Generiši sliku (${CREDIT_COST_IMAGE} tokena)`}
           </button>
         </form>
-        {imgPhotoErr ? (
-          <p className="mt-3 text-sm text-red-400">{imgPhotoErr}</p>
-        ) : null}
+        {imgPhotoErr ? <GenerationErrorBlock data={imgPhotoErr} /> : null}
         {imgPhotoUrl ? (
           <div className="mt-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -364,9 +401,7 @@ export function DashboardGenerations() {
               : `Generiši tekst (${CREDIT_COST_COPY} token)`}
           </button>
         </form>
-        {copyErr ? (
-          <p className="mt-3 text-sm text-red-400">{copyErr}</p>
-        ) : null}
+        {copyErr ? <GenerationErrorBlock data={copyErr} /> : null}
         {copyOut ? (
           <div className="mt-4 rounded-lg border border-zinc-700 bg-zinc-950/80 p-4">
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">

@@ -93,8 +93,16 @@ const geminiRetryIf = (err: unknown) => {
   return !/^GEMINI_API_(400|401|403|404|429)\b/.test(m);
 };
 
-export async function geminiImageFromText(textPrompt: string): Promise<Buffer> {
+export async function geminiImageFromText(
+  textPrompt: string,
+  contextHint?: string
+): Promise<Buffer> {
   const { client, model } = createImageGenClient();
+  const ctx = contextHint?.trim() ?? "";
+  const prompt =
+    ctx.length > 0
+      ? `${ctx}\n\n---\n\nZahtev za sliku:\n${textPrompt}`
+      : textPrompt;
   return callWithRetry(async () => {
     try {
       const res = await client.models.generateContent({
@@ -102,7 +110,7 @@ export async function geminiImageFromText(textPrompt: string): Promise<Buffer> {
         contents: [
           {
             role: "user",
-            parts: [{ text: textPrompt }],
+            parts: [{ text: prompt }],
           },
         ],
         config: imageGenerationConfig(),
@@ -117,13 +125,17 @@ export async function geminiImageFromText(textPrompt: string): Promise<Buffer> {
 export async function geminiImageFromPhoto(
   photo: Buffer,
   mimeType: string,
-  sideDescription: string
+  sideDescription: string,
+  contextHint?: string
 ): Promise<Buffer> {
   const { client, model } = createImageGenClient();
   const b64 = photo.toString("base64");
-  const prompt =
+  let prompt =
     sideDescription.trim() ||
     "Na osnovu ove fotografije napravi marketinšku sliku za salon (vrata / enterijer), profesionalno osvetljenje.";
+  if (contextHint?.trim()) {
+    prompt = `${contextHint.trim()}\n\n---\n\n${prompt}`;
+  }
 
   return callWithRetry(async () => {
     try {

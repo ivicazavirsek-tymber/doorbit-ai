@@ -15,17 +15,26 @@ type ContentPart =
 export async function openaiGenerateCopy(params: {
   brief: string;
   image?: { buffer: Buffer; mimeType: string };
+  /** Opciono: kratki kontekst iz profila / onboardinga. */
+  contextHint?: string;
 }): Promise<string> {
   const client = getClient();
   const model = getOpenAITextModel();
 
+  let userText =
+    "Ti si copywriter za salone vrata i enterijera. Napiši kratak, konkretan tekst za društvene mreže na srpskom (latinica), bez uvoda u stilu 'Evo teksta'. ";
+  if (params.contextHint?.trim()) {
+    userText +=
+      "\n\nKontekst o klijentu (koristi samo ako pomaže tonu i sadržaju):\n" +
+      params.contextHint.trim() +
+      "\n\n";
+  }
+  userText += "Zahtev klijenta:\n\n" + params.brief;
+
   const parts: ContentPart[] = [
     {
       type: "text",
-      text:
-        "Ti si copywriter za salone vrata i enterijera. Napiši kratak, konkretan tekst za društvene mreže na srpskom (latinica), bez uvoda u stilu 'Evo teksta'. " +
-          "Zahtev klijenta:\n\n" +
-          params.brief,
+      text: userText,
     },
   ];
 

@@ -1,3 +1,4 @@
+import { getEffectiveUserId } from "@/lib/admin/impersonation";
 import { createClient } from "@/lib/supabase/server";
 import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
 
@@ -12,6 +13,8 @@ export async function GET(request: Request) {
   if (!user) {
     return jsonError(401, "UNAUTHORIZED", "Prijavi se.", undefined, { requestId });
   }
+
+  const subjectUserId = await getEffectiveUserId(supabase, user.id);
 
   const { searchParams } = new URL(request.url);
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
@@ -29,7 +32,7 @@ export async function GET(request: Request) {
       "id, generation_type, status, credits_cost, created_at, completed_at, output_text, output_image_storage_path, error_message",
       { count: "exact" }
     )
-    .eq("user_id", user.id)
+    .eq("user_id", subjectUserId)
     .order("created_at", { ascending: false })
     .range(from, to);
 

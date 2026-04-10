@@ -1,3 +1,4 @@
+import { getEffectiveUserId } from "@/lib/admin/impersonation";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 import { createClient } from "@/lib/supabase/server";
 import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
@@ -19,6 +20,15 @@ export async function POST() {
   } = await supabase.auth.getUser();
   if (!user) {
     return fail(401, "UNAUTHORIZED", "Prijavi se.");
+  }
+
+  const effectiveId = await getEffectiveUserId(supabase, user.id);
+  if (effectiveId !== user.id) {
+    return fail(
+      403,
+      "FORBIDDEN",
+      "Završi pregled korisnika pre Stripe portala."
+    );
   }
 
   const baseUrl = getAppBaseUrl();

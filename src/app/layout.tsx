@@ -13,8 +13,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DoorBit AI",
-  description: "AI sadržaj za salone — slike i tekst uz Supabase i Stripe.",
+  title: {
+    default: "DoorBit AI",
+    template: "%s · DoorBit AI",
+  },
+  description:
+    "AI slike i marketing tekst za salone vrata i stolarije — tokeni, Stripe pretplata, bezbedna prijava.",
 };
 
 export default function RootLayout({

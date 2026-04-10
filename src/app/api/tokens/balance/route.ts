@@ -1,3 +1,4 @@
+import { getEffectiveUserId } from "@/lib/admin/impersonation";
 import { createClient } from "@/lib/supabase/server";
 import { getTokenBalance } from "@/lib/api/token-balance";
 import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
@@ -12,7 +13,8 @@ export async function GET() {
     return jsonError(401, "UNAUTHORIZED", "Prijavi se.", undefined, { requestId });
   }
 
-  const balance = await getTokenBalance(supabase, user.id);
+  const subjectUserId = await getEffectiveUserId(supabase, user.id);
+  const balance = await getTokenBalance(supabase, subjectUserId);
   if (balance === null) {
     return jsonError(
       500,

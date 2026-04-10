@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 type Props = {
   planKey: string | null;
   status: string | null;
@@ -43,7 +45,14 @@ export function SubscriptionStatusCard({
       <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
         <h2 className="text-sm font-medium text-zinc-300">Pretplata</h2>
         <p className="mt-2 text-sm text-zinc-400">
-          Nema aktivne pretplate. Izaberi plan na cenovniku.
+          Nema aktivne pretplate.{" "}
+          <Link
+            href="/pricing"
+            className="font-medium text-sky-400 underline-offset-2 hover:text-sky-300 hover:underline"
+          >
+            Izaberi plan na cenovniku
+          </Link>
+          .
         </p>
       </section>
     );

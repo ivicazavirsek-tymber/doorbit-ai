@@ -1,7 +1,9 @@
 import { checkRateLimitAllowed } from "@/lib/api/rate-limit";
 import { consumeCredits } from "@/lib/api/consume-credits";
-import { jsonError, jsonOk, newRequestId } from "@/lib/api/http";
+import { generationFail } from "@/lib/api/generation-http";
+import { jsonOk, newRequestId } from "@/lib/api/http";
 import { getTokenBalance } from "@/lib/api/token-balance";
+import { buildGenerationContextForUser } from "@/lib/ai/generation-context";
 import { geminiImageFromText } from "@/lib/ai/gemini-image";
 import {
   CREDIT_COST_IMAGE,
@@ -11,6 +13,7 @@ import {
 } from "@/lib/generation/constants";
 import { signedUrlForOutput } from "@/lib/generation/sign-url";
 import { getGeminiImageModel } from "@/lib/env";
+import { getEffectiveUserId } from "@/lib/admin/impersonation";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 
@@ -19,10 +22,11 @@ export async function POST(request: Request) {
   const fail = (
     status: number,
     code: string,
-    message: string,
+    internalMessage: string,
     details?: unknown,
     headers?: HeadersInit
-  ) => jsonError(status, code, message, details, { requestId, headers });
+  ) =>
+    generationFail({ requestId, status, code, internalMessage, details, headers });
 
   const supabase = await createClient();
   const {
@@ -31,6 +35,9 @@ export async function POST(request: Request) {
   if (!user) {
     return fail(401, "UNAUTHORIZED", "Prijavi se.");
   }
+
+  const subjectUserId = await getEffectiveUserId(supabase, user.id);
+  const contextHint = await buildGenerationContextForUser(supabase, subjectUserId);
 
   let service;
   try {
@@ -45,7 +52,7 @@ export async function POST(request: Request) {
 
   const okRate = await checkRateLimitAllowed(
     service,
-    user.id,
+    subjectUserId,
     "generate_image_from_text",
     RATE_LIMIT_PER_ROUTE_PER_MINUTE
   );
@@ -55,7 +62,7 @@ export async function POST(request: Request) {
     });
   }
 
-  const balance = await getTokenBalance(supabase, user.id);
+  const balance = await getTokenBalance(supabase, subjectUserId);
   if (balance === null) {
     return fail(500, "BALANCE_READ_FAILED", "Ne mogu da pročitam stanje kredita.");
   }
@@ -96,7 +103,7 @@ export async function POST(request: Request) {
     const { data: existing } = await supabase
       .from("ai_generations")
       .select("*")
-      .eq("user_id", user.id)
+      .eq("user_id", subjectUserId)
       .eq("generation_type", "image_from_text")
       .eq("idempotency_key", idempotency_key)
       .maybeSingle();
@@ -107,12 +114,7 @@ export async function POST(request: Request) {
         existing.output_image_storage_path
       );
       if (existing.output_image_storage_path && !url) {
-        return fail(
-          500,
-          "SIGN_URL_FAILED",
-          "Ne mogu da napravim privremeni link za sliku.",
-          { generation_id: existing.id }
-        );
+        return fail(500, "SIGN_URL_FAILED", "sign url failed cached");
       }
       return jsonOk({
         cached: true,
@@ -144,7 +146,7 @@ export async function POST(request: Request) {
   const { data: row, error: insErr } = await supabase
     .from("ai_generations")
     .insert({
-      user_id: user.id,
+      user_id: subjectUserId,
       generation_type: "image_from_text",
       status: "pending",
       credits_cost: CREDIT_COST_IMAGE,
@@ -169,7 +171,10 @@ export async function POST(request: Request) {
 
   let imageBuf: Buffer;
   try {
-    imageBuf = await geminiImageFromText(text_prompt);
+    imageBuf = await geminiImageFromText(
+      text_prompt,
+      contextHint.trim() ? contextHint : undefined
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : "AI greška";
     await supabase
@@ -180,16 +185,11 @@ export async function POST(request: Request) {
         completed_at: new Date().toISOString(),
       })
       .eq("id", genId)
-      .eq("user_id", user.id);
-    return fail(
-      503,
-      "AI_FAILED",
-      "Model za slike nije uspeo posle više pokušaja. Proveri GEMINI_API_KEY i naziv modela.",
-      { detail: msg }
-    );
+      .eq("user_id", subjectUserId);
+    return fail(503, "AI_FAILED", msg);
   }
 
-  const outPath = `${user.id}/${genId}/output.png`;
+  const outPath = `${subjectUserId}/${genId}/output.png`;
   const { error: upErr } = await supabase.storage
     .from("generation-outputs")
     .upload(outPath, imageBuf, {
@@ -206,7 +206,7 @@ export async function POST(request: Request) {
         completed_at: new Date().toISOString(),
       })
       .eq("id", genId)
-      .eq("user_id", user.id);
+      .eq("user_id", subjectUserId);
     return fail(500, "STORAGE_UPLOAD", "Čuvanje slike nije uspelo.");
   }
 
@@ -218,10 +218,10 @@ export async function POST(request: Request) {
       completed_at: new Date().toISOString(),
     })
     .eq("id", genId)
-    .eq("user_id", user.id);
+    .eq("user_id", subjectUserId);
 
   const consume = await consumeCredits(service, {
-    userId: user.id,
+    userId: subjectUserId,
     amount: CREDIT_COST_IMAGE,
     reason: "generation:image_from_text",
     idempotencyKey: `consume_gen:${genId}`,
@@ -229,24 +229,14 @@ export async function POST(request: Request) {
   });
 
   if ("error" in consume) {
-    return fail(
-      500,
-      "DEBIT_FAILED",
-      "Slika je sačuvana, ali skidanje kredita nije uspelo. Javi podršci.",
-      { generation_id: genId, debit_code: consume.error }
-    );
+    return fail(500, "DEBIT_FAILED", `debit ${consume.error}`);
   }
 
   const balanceAfter = consume.newBalance;
 
   const signed = await signedUrlForOutput(supabase, outPath);
   if (!signed) {
-    return fail(
-      500,
-      "SIGN_URL_FAILED",
-      "Slika je sačuvana, ali privremeni link nije mogao da se napravi.",
-      { generation_id: genId }
-    );
+    return fail(500, "SIGN_URL_FAILED", "sign url failed after upload");
   }
 
   return jsonOk({

@@ -17,8 +17,8 @@ Next.js (App Router) · TypeScript · Tailwind · Supabase (Auth, Postgres, RLS,
 | 5 | Backend AI (`/api/generate/*`, balance, history, retry, rate limit, consume posle uspeha) | **Završeno** |
 | 6 | Error format + edge case-ovi | **Završeno** |
 | 7 | Stripe (checkout, webhook, portal) | **Završeno** (primeni migraciju + Stripe env) |
-| 8 | Admin (stats, korisnici, token adjust, impersonation, audit) | Na čekanju |
-| 9 | UI (landing, pricing, onboarding, dashboard proizvod) | **U toku** (pricing + dashboard generacije u kodu) |
+| 8 | Admin (stats, korisnici, token adjust, impersonation, audit) | **Završeno** (primeni migraciju `20260405120000_admin_adjust_tokens.sql`) |
+| 9 | UI (landing, pricing, onboarding, dashboard proizvod) | **Završeno** (landing, cenovnik + FAQ, tamni onboarding, dashboard + generacije) |
 | 10 | E2E / smoke testovi | Na čekanju |
 | 11 | Deploy (Vercel, DEV/PROD env) | Na čekanju |
 
@@ -59,6 +59,10 @@ Next.js (App Router) · TypeScript · Tailwind · Supabase (Auth, Postgres, RLS,
 - **Remote:** `origin` → `github.com/ivicazavirsek-tymber/doorbit-ai`  
 - Poslednji push sa ovog plana: vidi sekciju „Poslednje ažuriranje plana“ ispod.
 
+## Token balans (pretplata)
+
+- Stanje kredita je **kumulativno**: novi mesečni grant iz Stripe naplate **dodaje se** na postojeći balans u ciklusu naplate (nije „hard reset“ na fiksni iznos u kodu).
+
 ## Faza 7 (Stripe — šta uraditi lokalno)
 
 1. U Stripe Dashboard kreiraj **Products** i **Prices** (mesečno/godišnje) i kopiraj Price ID u `STRIPE_PRICE_*_ID_DEV` u `.env.local` (uključujući i `STRIPE_PRICE_PRO_YEARLY_ID_DEV`).
@@ -94,4 +98,8 @@ Napomena: valute su trenutno mešane (EUR/USD). To tehnički radi, ali je običn
 
 ## Poslednje ažuriranje plana
 
-2026-03-31 — Gemini slike: podrazumevani model `gemini-2.5-flash-image`, `verify:gemini-image` / `verify:ai`, duži HTTP timeout za slike, retry pravila; `grant-tokens` bez naglog `process.exit` u async (Windows). Stripe proširen za `pro_yearly` plan (kod + env + migracija + cene u planu). Dodata kartica statusa pretplate na dashboardu (uključujući „otkazana, ali važi do kraja perioda“). Faza 7 ostaje završena; Faza 9 delimično (pricing + dashboard generacije). Kod sinhronizovan sa GitHub (`main`).
+2026-04-10 — **Faza 9:** marketing početna (hero, tri modula, koraci, futer), cenovnik sa FAQ (tokeni, rollover), onboarding u istom tamnom vizuelnom jeziku kao dashboard, kontrolna tabla sa uvodom i linkom na cenovnik kada nema pretplate.
+
+2026-04-05 — **Faza 8:** admin statistika, lista korisnika (Auth + profili), detalj korisnika, RPC `admin_adjust_tokens` + forma, audit log (pregled), impersonacija (sesija + cookie, dashboard kao korisnik), Stripe checkout/portal blokirani tokom pregleda, middleware: admin preskače obavezni onboarding na dashboardu.
+
+2026-03-31 — Gemini slike: podrazumevani model `gemini-2.5-flash-image`, `verify:gemini-image` / `verify:ai`, duži HTTP timeout za slike, retry pravila; `grant-tokens` bez naglog `process.exit` u async (Windows). Stripe proširen za `pro_yearly` plan (kod + env + migracija + cene u planu). Dodata kartica statusa pretplate na dashboardu (uključujući „otkazana, ali važi do kraja perioda“). Faza 7 ostaje završena. Kod sinhronizovan sa GitHub (`main`).

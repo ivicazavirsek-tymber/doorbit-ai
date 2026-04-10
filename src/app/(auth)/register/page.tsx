@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { Field } from "@/components/auth/field";
 import { createClient } from "@/lib/supabase/client";
 
 export default function RegisterPage() {
+  const router = useRouter();
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -19,18 +22,37 @@ export default function RegisterPage() {
     setMessage(null);
     const supabase = createClient();
     const origin = window.location.origin;
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: `${origin}/auth/callback?next=/dashboard`,
+        data: { display_name: fullName.trim() },
+        emailRedirectTo: `${origin}/auth/callback?next=/onboarding`,
       },
     });
-    setLoading(false);
+
     if (error) {
+      setLoading(false);
       setMessage(error.message);
       return;
     }
+
+    if (data.user?.id && fullName.trim()) {
+      await supabase
+        .from("profiles")
+        .update({ display_name: fullName.trim() })
+        .eq("user_id", data.user.id);
+    }
+
+    setLoading(false);
+
+    // Kada je email confirmation ugašen (dev/test), sesija postoji odmah.
+    if (data.session) {
+      router.push("/onboarding");
+      router.refresh();
+      return;
+    }
+
     setDone(true);
   }
 
@@ -64,6 +86,16 @@ export default function RegisterPage() {
             {message}
           </p>
         ) : null}
+        <Field
+          label="Ime i prezime"
+          id="full_name"
+          type="text"
+          autoComplete="name"
+          required
+          value={fullName}
+          onChange={setFullName}
+          disabled={loading}
+        />
         <Field
           label="Email"
           id="email"
